@@ -4,8 +4,8 @@ date
 
 #Open modules
 echo "----------Loading modules.----------"
-module load samtools
-module load skewer
+module load java
+pip3 install --user --upgrade cutadapt
 module load STAR
 echo "----------Modules loaded.----------"
 date
