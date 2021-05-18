@@ -1,0 +1,134 @@
+---
+title: "CreateSeuratObject_sybb412project"
+output: html_document
+author:
+  affiliation: 'Case Western Reserve University'
+  email: 'jxi98@case.edu'
+  name: 'Jeeda Ismail'
+date: '`r format(Sys.Date())`'
+
+---
+
+NOTE: this workflow is based on the scripts provided at https://github.com/czbiohub/scell_lung_adenocarcinoma
+
+---
+
+
+Description
+===========
+
+This file shows our workflow to process raw data and metadata data in Seurat and then create Seurat Object. We will:  
+
+* Load libraries
+* Load in the data
+* Create Seurat object
+* Filter Seurat object
+* Save Seurat object
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+Load libraries
+```{r setup, include=FALSE}
+library(useful)
+library(Seurat)
+library(dplyr)
+library(Matrix)
+```
+
+Set the full path to our directory
+```{r set wd path}
+rm(list=ls())
+# dir <- "/myVolume/scell_lung_adenocarcinoma/"
+dir <- "C:/Users/jeedi/OneDrive - case.edu/Desktop/CWRU/Spring 2021/SYBB 412/Project_SYBB412/"
+# dir <- "~/Downloads/scell_lung_adenocarcinoma/"
+```
+
+##Loading Data
+
+Load data
+```{r load data}
+
+raw.data <- read.csv(paste(dir,"Data_input/S01_datafinal.csv", sep=""), header=T, row.names = 1)
+dim(raw.data)
+head(colnames(raw.data))
+```
+
+
+Load metadata
+```{r load metadata}
+metadata <- read.csv(paste(dir,"Data_input/S01_metacells.csv", sep=""), row.names=1, header=T)
+head(metadata)
+```
+
+Save both objects as RData object 
+```{r save object}
+save(list=c("metadata","raw.data","dir"), file=paste(dir,"Data_input/S01_Data_and_metadata.RData", sep=""))
+```
+
+##Creating Seurat Object
+
+Load RData object 
+```{r}
+rm(list=ls())
+dir <- "C:/Users/jeedi/OneDrive - case.edu/Desktop/CWRU/Spring 2021/SYBB 412/Project_SYBB412/"
+load(file = paste(dir,"Data_input/S01_Data_and_metadata.RData", sep=""))
+```
+
+Find ERCC's, compute the percent ERCC, and drop them from the raw data.
+(ERCC RNA Spike-In Controls are used to create a standard baseline measurement of RNA both within an experiment and across multiple experiments performed using various samples and platforms.)
+```{r}
+erccs <- grep(pattern = "^ERCC-", x = rownames(x = raw.data), value = TRUE)
+percent.ercc <- Matrix::colSums(raw.data[erccs, ])/Matrix::colSums(raw.data)
+ercc.index <- grep(pattern = "^ERCC-", x = rownames(x = raw.data), value = FALSE)
+raw.data <- raw.data[-ercc.index,]
+dim(raw.data)
+```
+
+Create the Seurat object with all the data (unfiltered)
+```{r}
+memory.size(max=60000) #jismail: increasing my RAM memory to run main_tiss
+
+main_tiss <- CreateSeuratObject(counts = raw.data)
+# add rownames to metadta 
+row.names(metadata) <- metadata$cell_id
+# add metadata to Seurat object 
+main_tiss <- AddMetaData(object = main_tiss, metadata = metadata)
+main_tiss <- AddMetaData(object = main_tiss, percent.ercc, col.name = "percent.ercc")
+# Head to check
+head(main_tiss@meta.data)
+```
+
+Save prefiltered Seurat object 
+```{r}
+save(main_tiss, file=paste(dir,"Data_input/S02_Main_Seurat_object_prefilter.RData", sep=""))
+# load(paste(dir,"Data_input/Main_Seurat_object_prefilter.RData", sep=""))
+```
+
+##Filtering
+
+
+Calculate percent ribosomal genes and add to metadata
+```{r}
+ribo.genes <- grep(pattern = "^RP[SL][[:digit:]]", x = rownames(x = main_tiss@assays$RNA@data), value = TRUE)
+percent.ribo <- Matrix::colSums(main_tiss@assays$RNA@counts[ribo.genes, ])/Matrix::colSums(main_tiss@assays$RNA@data)
+main_tiss <- AddMetaData(object = main_tiss, metadata = percent.ribo, col.name = "percent.ribo")
+main_tiss
+```
+
+Filter cells so that remaining cells have nGenes >= 500 and nReads >= 50000
+```{r}
+main_tiss_filtered <- subset(x=main_tiss, subset = nCount_RNA > 50000 & nFeature_RNA > 500)
+main_tiss_filtered
+```
+
+Save filtered Seurat object
+```{r}
+save(main_tiss_filtered, file=paste(dir,"Data_input/S02_Main_Seurat_object_filtered.RData", sep=""))
+```
+
+
