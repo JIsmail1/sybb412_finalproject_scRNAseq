@@ -1,0 +1,514 @@
+---
+title: "02SubsettingCancerCells_sybb412"
+output: html_document
+author:
+  affiliation: 'Case Western Reserve University'
+  email: 'jxi98@case.edu'
+  name: 'Jeeda Ismail'
+date: '`r format(Sys.Date())`'
+---
+
+NOTE: this workflow is based on the scripts (03 & NI01-NI04) provided at https://github.com/czbiohub/scell_lung_adenocarcinoma
+
+---
+
+
+Description
+===========
+
+Because we are interested in looking at gene expression in cancer cells, we will subset the samples into immune and non-immune then continue with the non-immune cells only to further subset into cancer cells.
+
+Our workflow in this script: 
+
+* Load Seurat object (from 01CreateSeuratObject_sybb412)
+* Subset to samples with >10 cells
+    * PCA and clustering
+    * tSNE
+    * Find markers for each cluster
+* Annotate and subset cells to immune and non-immune cells
+* Create non-immune cells Seurat object
+    * PCA and clustering
+    * tSNE
+    * Find markers for each cluster
+    * Annotate general nonimmune cells
+* Cluster and annotate non-immune cells Seurat object
+    * PCA and clustering
+    * tSNE
+    * Find markers for each cluster
+* Subset to epithelial cells and recluster
+* Further subset to epithelial cancer cells only and recluster
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Loading Seurat object
+
+Load libraries
+```{r}
+library(Seurat)
+library(devtools)
+library(clustree)
+library(tidyverse)
+library(gridExtra)
+library(ggridges)
+library(ggplot2)
+library(ggExtra)
+require(corrplot)
+library(scales)
+```
+
+
+Load filtered Seurat object 
+```{r}
+# rm(list=ls())
+# dir <- "/myVolume/scell_lung_adenocarcinoma/"
+dir <- "C:/Users/jeedi/OneDrive - case.edu/Desktop/CWRU/Spring 2021/SYBB 412/Project_SYBB412/"
+load(file=paste(dir,"Data_input/S02_Main_Seurat_object_filtered.RData", sep=""))
+```
+
+Drop any samples with 10 or less cells
+```{r}
+main_tiss_filtered@meta.data$sample_name <- as.character(main_tiss_filtered@meta.data$sample_name)
+sample_name <- as.character(main_tiss_filtered@meta.data$sample_name)
+# Make table 
+tab.1 <- table(main_tiss_filtered@meta.data$sample_name) 
+# Which samples have less than 10 cells 
+samples.keep <- names(which(tab.1 > 10))
+metadata_keep <- filter(main_tiss_filtered@meta.data, sample_name %in% samples.keep)
+# Subset Seurat object 
+tiss_subset <- subset(main_tiss_filtered, cells=as.character(metadata_keep$cell_id))
+tiss_subset
+```
+
+
+##Save filtered subset as a new Seurat object
+
+Save subseted Seurat object
+```{r}
+save(tiss_subset, file=paste(dir,"Data_input/S03_Main_Seurat_object_filtered_and_subset.RData", sep=""))
+```
+
+
+##Preparing for PCA: Normalization, scaling & variable gene selection
+
+
+Normalize and scale the data
+```{r}
+tiss_subset <- NormalizeData(object = tiss_subset, scale.factor = 1e6)
+memory.limit()
+memory.size(max=25000) #jismail: increasing my RAM memory to run main_tiss
+tiss_subset <- ScaleData(object = tiss_subset)
+
+```
+
+
+Find variable genes
+```{r}
+tiss_subset <- FindVariableFeatures(object = tiss_subset, do.plot = TRUE, x.high.cutoff = Inf, y.cutoff = 0.5)
+```
+
+
+
+##Dimension reduction: PCA
+
+Perform PCA
+```{r}
+tiss_subset <- RunPCA(object = tiss_subset, do.print = FALSE)
+```
+
+
+Visualize variance along each component
+```{r}
+ElbowPlot(tiss_subset)
+```
+
+Visualize first two PCs
+```{r}
+PCAPlot(object = tiss_subset)
+```
+
+Visualize top genes in principal components
+```{r}
+DimHeatmap(tiss_subset, dims = 1:10, cells = 100, balanced = TRUE)
+```
+
+
+##Clustering
+
+Construct Neighbor graph 
+```{r}
+tiss_subset <- FindNeighbors(object = tiss_subset, verbose = T)
+```
+
+Find Clusters 
+```{r}
+tiss_subset <- FindClusters(object = tiss_subset, verbose = T, resolution = 0.5)
+```
+
+
+##tSNE
+
+Run and project TSNEs
+```{r}
+tiss_subset <- RunTSNE(tiss_subset, dims = 1:20)
+DimPlot(tiss_subset, reduction = "tsne", label = T)
+```
+
+
+##Find markers for each cluster
+
+Find markers for each cluster
+```{r}
+tiss.markers <- FindAllMarkers(object = tiss_subset, only.pos = TRUE, min.pct = 0.25, thresh.use = 0.25, 
+                                      do.print=T, max.cells.per.ident = 500)
+```
+
+
+Write differential gene table
+```{r}
+write.table(tiss.markers, file=paste(dir,"data_out/S03/All_cells_DE_genes_among_Seurat_clusters.csv", sep=""))
+```
+
+
+Display the top markers you computed above.
+```{r}
+require(tidyverse)
+require(dplyr)
+tiss.markers %>% group_by(cluster) %>% top_n(10, avg_log2FC)
+```
+
+Plot genes of interest and save 
+```{r}
+# Specify genes  
+genes_to_check = c("PTPRC","EPCAM","CD3G","CD3E", "CD79A", "BLNK","MS4A1", "CD68", "CSF1R", "MARCO", "CD207", "PMEL", "ALB", "C1QB", "CLDN5", "FCGR3B", "COL1A1")
+# All on Dotplot 
+p <- DotPlot(tiss_subset, features = genes_to_check) + coord_flip()
+ggsave(paste(dir,"plot_out/S03/dotplot_of_gene_markers.pdf", sep=""), p, width = 10, height = 10)
+p
+```
+
+##Annotate non-immune cell clusters
+
+Annotate Immune vs Nonimmune clusters
+At this point we dont care for a more detailed annotation as we will annotate immune and non-immune separately later
+```{r}
+#add column 'main_seurat_cluster' to store cluster ids from this step.
+tiss_subset@meta.data$main_seurat_cluster <- tiss_subset@meta.data$SmartSeq2_snn_res.0.5 #replace seurat_clusters
+# Change the column of the resolution if you ended up using a different one than 0.5 
+cluster.ids <- sort(as.numeric(unique(as.character(tiss_subset@meta.data$SmartSeq2_snn_res.0.5)))) #replace SmartSeq2 with RNA_snn_res.05 with 
+# Manually check and ananotate each cluster to immmune and non-immune   
+immune_annotation <- c("immune","non-immune","immune","immune","immune","non-immune","immune","non-immune","non-immune","immune","non-immune","immune","non-immune","immune","non-immune","non-immune","non-immune","immune","immune","non-immune","non-immune")
+# immune_annotation <- c("0","1","2","3","4",
+#                        "5","6","7","8","9",
+#                        "10","11","12","13","14",
+#                        "15","16","17","18","19",
+#                        "20","21","22","23","24")
+# Add annotation to the Seurat object 
+tiss_subset@meta.data$immune_annotation <- tiss_subset@meta.data$SmartSeq2_snn_res.0.5 #seruat_clusters
+tiss_subset@meta.data$immune_annotation <- plyr::mapvalues(x = tiss_subset@meta.data$immune_annotation, from = cluster.ids, to = immune_annotation)
+# MAke a table 
+table(tiss_subset@meta.data$immune_annotation)
+```
+
+Make and save relevant plots 
+```{r}
+# TSNE plot 
+p <- TSNEPlot(object = tiss_subset, do.label = FALSE, group.by = 'immune_annotation')
+ggsave(paste(dir,"plot_out/S03/main_tSNE_immune_annotation.pdf", sep=""), p, width = 10, height = 10)
+# Annotation count 
+p <- ggplot(tiss_subset@meta.data, aes(immune_annotation)) + geom_bar() + 
+  coord_flip() + theme(legend.position = "bottom") + xlab("annotation") +
+  ylab("count")
+ggsave(paste(dir,"plot_out/S03/annotation_count.pdf", sep=""), p, width = 10, height = 10)
+# Reads vs Genes 
+p <- ggplot(tiss_subset@meta.data, aes(x = nFeature_SmartSeq2, y = nCount_SmartSeq2)) + geom_point() + theme_bw() + scale_y_log10()
+ggsave(paste(dir,"plot_out/S03/reads_vs_genes.pdf", sep=""), p, width = 10, height = 10)
+```
+
+Generate nonimmune cell lists
+```{r}
+
+# Non-immune dataset
+cells.use.nonimmune <- row.names(tiss_subset@meta.data)[which(tiss_subset@meta.data$immune_annotation=='non-immune')]
+length(cells.use.nonimmune)
+tiss_nonimmune <-subset(tiss_subset, cells=cells.use.nonimmune)
+nonimmune_cells <- rownames(tiss_nonimmune@meta.data)
+write.csv(nonimmune_cells, file = paste(dir,"data_out/S03/nonimmune_cells.csv", sep=""))
+```
+
+
+
+##Create and save non-immune cells Seurat object
+
+Save Processed Subset Seurat Object
+```{r}
+save(tiss_subset, file=paste(dir,"Data_input/objects/S03_Main_Seurat_object_filtered_and_subset.RData", sep=""))
+
+save(tiss_nonimmune, file=paste(dir,"Data_input/objects/S03_Nonimmune_Seurat_object.RData", sep=""))
+```
+
+
+
+##Subset non-immune cells and recluster
+
+We repeat the same workflow as previous.
+
+Normalize and scale the non-immune cells data
+```{r}
+tiss_nonimmune <- NormalizeData(object = tiss_nonimmune)
+```
+
+Find variable genes
+```{r}
+tiss_nonimmune <- FindVariableFeatures(object = tiss_nonimmune)
+```
+
+Scale data
+```{r}
+tiss_nonimmune <- ScaleData(object = tiss_nonimmune)
+```
+
+Perform PCA
+```{r}
+tiss_nonimmune <- RunPCA(object = tiss_nonimmune, do.print = FALSE)
+```
+
+Visualize first two PCs
+```{r}
+pdf(paste(dir,file = "plot_out/NI01/pca_by_tisssubsetclus.pdf", sep = ""))
+DimPlot(tiss_nonimmune, reduction = 'pca')
+dev.off()
+```
+
+
+Also visaulize PC variance
+```{r}
+ElbowPlot(object = tiss_nonimmune)
+```
+
+Choose the number of principal components to use.
+```{r}
+n.pcs = 20
+```
+
+Construct Neighbor graph 
+```{r}
+tiss_nonimmune <- FindNeighbors(object = tiss_nonimmune, dims = 1:20, verbose = T)
+```
+
+Set resolution and perform clustering
+```{r}
+res.used <- 1
+tiss_nonimmune <- FindClusters(object = tiss_nonimmune, verbose = T, resolution = res.used)
+```
+
+Perform  tSNE
+```{r}
+tiss_nonimmune <- RunTSNE(tiss_nonimmune, dims = 1:20)
+DimPlot(tiss_nonimmune, reduction = "tsne", label = TRUE)
+```
+
+Plot genes of interest and save 
+```{r}
+# Specify genes  
+genes_to_check = c("PMEL", "MLANA","PECAM1", "CD34", "VWF", "EPCAM","SFN", "KRT19",
+                   "ACTA2", "MCAM", "MYLK", "MYL9", "FAP", "THY1", "ALB")
+# All on Dotplot 
+p <- DotPlot(tiss_nonimmune, features = genes_to_check) + coord_flip()
+ggsave(paste(dir,"plot_out/NI01/nonimmune_dotplot_of_gene_markers.pdf", sep=""), p, width = 10, height = 10)
+p
+
+```
+
+Annotate General Non-Immune Clusters
+```{r}
+#add column 'nonimmune_seurat_cluster' to store cluster ids from this step. 
+tiss_nonimmune@meta.data$nonimmune_seurat_cluster <- tiss_nonimmune@meta.data$seurat_clusters
+
+# set the cluster ids
+cluster.ids <- sort(unique(tiss_nonimmune@meta.data$seurat_clusters))
+# Manually check and ananotate each cluster to immmune and non-immune   
+nonimmune_general_annotation <- c("fibroblast","epithelial", "endothelial", "epithelial", "epithelial", "fibroblast", 
+                                  "epithelial", "fibroblast", "epithelial", "epithelial", "fibroblast", 
+                                  "epithelial", "epithelial", "epithelial", "epithelial", "fibroblast", 
+                                  "endothelial", "epithelial", "fibroblast", "epithelial", "epithelial", 
+                                  "melanocytes", "endothelial", "hepatocyte", "epithelial", "epithelial",
+                                  "hepatocyte")
+# Add annotation to the Seurat object
+tiss_nonimmune@meta.data[,'nonimmune_general_annotation'] <- plyr::mapvalues(x = tiss_nonimmune@meta.data$seurat_clusters, from = cluster.ids, to = nonimmune_general_annotation)
+# Make a table 
+table(tiss_nonimmune@meta.data$nonimmune_general_annotation)
+table(tiss_nonimmune@meta.data$nonimmune_general_annotation, tiss_nonimmune@meta.data$seurat_clusters)
+```
+
+Save Processed Subset Seurat Object
+```{r}
+save(tiss_nonimmune, file=paste(dir,"Data_input/objects/NI01_Nonimmune_Seurat_object_annotated.RData", sep=""))
+```
+
+Load objects to add metadata and cells
+```{r}
+# load(file=paste(dir,"Data_input/objects/NI01_Nonimmune_Seurat_object_annotated.RData", sep=""))
+load(file=paste(dir,"Data_input/objects/S03_Main_Seurat_object_filtered_and_subset.RData", sep=""))
+```
+
+Save annotations to tiss_subset
+```{r}
+# colnames(tiss_nonimmune@meta.data)
+tiss_subset@meta.data <- left_join(tiss_subset@meta.data, tiss_nonimmune@meta.data[,c("cell_id","nonimmune_general_annotation")], by = 'cell_id')
+table(tiss_subset@meta.data$nonimmune_general_annotation)
+
+tiss_subset@meta.data$general_annotation <- tiss_subset@meta.data$nonimmune_general_annotation
+
+tiss_subset@meta.data$general_annotation <- as.character(tiss_subset@meta.data$general_annotation)
+table(is.na(tiss_subset@meta.data$general_annotation)) # look for NAs
+
+tiss_subset@meta.data$general_annotation[is.na(tiss_subset@meta.data$general_annotation)] <- "immune" #replace NAs with immune
+table(tiss_subset@meta.data$general_annotation)
+```
+
+Color tSNE by general annotation (Epi/Immune/Stroma)
+```{r}
+tiss_subset@meta.data$general_annotation1 <- tiss_subset@meta.data$general_annotation
+# replace endo/fibro/hepta/melano without "stroma"
+tiss_subset@meta.data$general_annotation <- gsub(pattern = "endothelial", replacement = "stroma", x = tiss_subset@meta.data$general_annotation)
+tiss_subset@meta.data$general_annotation <- gsub(pattern = "fibroblast", replacement = "stroma", x = tiss_subset@meta.data$general_annotation)
+tiss_subset@meta.data$general_annotation <- gsub(pattern = "hepatocyte", replacement = "stroma", x = tiss_subset@meta.data$general_annotation)
+tiss_subset@meta.data$general_annotation <- gsub(pattern = "melanocytes", replacement = "stroma", x = tiss_subset@meta.data$general_annotation)
+rownames(tiss_subset@meta.data) <- tiss_subset@meta.data$cell_id  # reassign rownames
+table(tiss_subset@meta.data$general_annotation) #check
+# save
+save(tiss_subset, file = paste(dir,"Data_input/objects/S03_Main_Seurat_object_filtered_and_subset_annotated.RData", sep=""))
+```
+
+Plot general annotation on tSNE
+```{r}
+
+# my_color_palette <- hue_pal()(length(unique(tiss_subset@meta.data$general_annotation)))
+my_color_palette <- c("#CC3399", "#009966", "#FF9933")
+pdf(file = paste(dir, "plot_out/NI01/NI01_main_tSNE_with_anno.pdf", sep = ""), width = 7, height = 5)
+TSNEPlot(tiss_subset, group.by = 'general_annotation', do.label = FALSE, pt.size = 0.5) + scale_color_manual(values = my_color_palette)
+dev.off()
+```
+
+
+
+##Subset to epithelial cells only and recluster
+
+
+Subset Seurat object to Only Epithelial Cells
+```{r}
+Epi_cells <- filter(tiss_nonimmune@meta.data, nonimmune_general_annotation == "epithelial")
+cells.use <- Epi_cells$cell_id
+length(cells.use)
+tiss_nonimmune_epi <- subset(tiss_nonimmune, cells = cells.use)
+```
+
+Normalize data
+```{r}
+tiss_nonimmune_epi <- NormalizeData(object = tiss_nonimmune_epi)
+```
+
+Find variable genes
+```{r}
+tiss_nonimmune_epi <- FindVariableFeatures(object = tiss_nonimmune_epi)
+```
+
+Scale data
+```{r}
+tiss_nonimmune_epi <- ScaleData(object = tiss_nonimmune_epi)
+```
+
+Perform PCA
+```{r}
+tiss_nonimmune_epi <- RunPCA(object = tiss_nonimmune_epi)
+```
+
+PCA plot of 1st two PCs
+```{r}
+DimPlot(tiss_nonimmune_epi, reduction = 'pca')
+```
+
+Visualize top genes in principal components
+```{r}
+DimHeatmap(tiss_nonimmune_epi, dims = 1:10, cells = 100, balanced = TRUE)
+```
+
+Perform correlation of PCs and metadata fields
+```{r}
+pca.obj <- tiss_nonimmune_epi@reductions$pca
+pc.coords <- pca.obj@cell.embeddings
+df1 <- tiss_nonimmune_epi@meta.data[,c("nFeature_RNA","nCount_RNA","percent.ribo")]
+df2 <- pc.coords[,c(1:10)]
+cordf12 <- cor(df1,df2)
+# Make a correlation plot
+corrplot(cordf12, method = "number", main="Correlation of PCs and metadata")
+```
+
+Also visaulize PC variance
+```{r}
+ElbowPlot(object = tiss_nonimmune_epi, ndims = 40)
+```
+
+Choose the number of principal components to use.
+```{r}
+n.pcs = 30
+```
+
+Find Neighbors
+```{r}
+tiss_nonimmune_epi <- FindNeighbors(object = tiss_nonimmune_epi, dims = 1:n.pcs, verbose = T)
+```
+
+Check clustering stability at given resolution (Clustree)
+```{r}
+# Set different resolutions 
+res.used <- seq(0.1,1,by=0.2)
+# Loop over and perform clustering of different resolutions 
+for(i in res.used){
+        tiss_nonimmune_epi <- FindClusters(object = tiss_nonimmune_epi, verbose = T, resolution = res.used)}
+# Make plot 
+clus.tree.out <- clustree(tiss_nonimmune_epi) +
+    theme(legend.position = "bottom") + 
+    scale_color_brewer(palette = "Set1") +
+    scale_edge_color_continuous(low = "grey80", high = "red")
+# Save pdf 
+ggsave(clus.tree.out, filename = paste(dir,"plot_out/NI02/Cluster_resolutions_clustree_output.pdf", sep=""), width = 15, height = 15)
+# Plot 
+clus.tree.out
+```
+
+Set resolution and perform clustering
+```{r}
+res.used <- .7
+tiss_nonimmune_epi <- FindClusters(object = tiss_nonimmune_epi, verbose = T, resolution = res.used)
+```
+
+Perform  tSNE
+```{r}
+tiss_nonimmune_epi <- RunTSNE(object = tiss_nonimmune_epi, dims.use = 1:n.pcs, seed.use = 10)
+```
+
+Visualize TSNE colroed by cluster
+```{r}
+pdf(paste(dir,"plot_out/NI02/epi_all_tSNE.pdf", sep=""),10,10)
+DimPlot(tiss_nonimmune_epi, reduction = "tsne", label = FALSE, group.by = "seurat_clusters")
+dev.off()
+```
+
+Set Metadata Column for Cluster IDs
+```{r}
+tiss_nonimmune_epi@meta.data$epi_seurat_cluster <- tiss_nonimmune_epi@meta.data$seurat_clusters
+```
+
+
+```{r}
+save(tiss_nonimmune_epi, file= paste(dir,"/Data_input/objects/NI02_Epi_Seurat_object_clustered.RData", sep=""))
+```
+
+
+##Subset to cancer epithelial cells and recluster
+
